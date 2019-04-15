@@ -1,5 +1,6 @@
 import requests
 import os
+import sys
 import time
 from ruamel_yaml import YAML
 import threading
@@ -7,12 +8,18 @@ import subprocess
 
 yaml = YAML()
 
+
 def enableLED():
-    subprocess.run("./enableLED.sh")
+    subprocess.Popen("./enableLED.sh")
+
+
 def blinkSuccess():
-    subprocess.run("./success.sh")
+    subprocess.Popen("./success.sh")
+
+
 def blinkError():
-    subprocess.run("./error.shpytho")
+    subprocess.Popen("./error.sh")
+
 
 # load configuration
 configPath = os.path.join(os.getcwd(), 'config.yaml')
@@ -22,33 +29,38 @@ with open(configPath) as configFile:
     except yaml.YAMLError as exc:
         raise FileNotFoundError(exc)
 
+config['ONLINE'] = True
+
 # ###########
 # Enable user control of pi led
-enableLED()
+# enableLED()
 
 # build request urls
-serverURL = 'https://' + config['SERVER_IP'] + ':' + config['SERVER_PORT']
+serverURL = 'http://' + config['SERVER_IP'] + ':' + config['SERVER_PORT'] # ToDo convert to HTTPS after testing
 initURL = serverURL + config['API_INIT']
 dataURL = serverURL + config['API_DATA']
+header = {'Authorization': 'Bearer ' + config['API_TOKEN']}
 
-
-s = requests.session()
 
 # Attempt to connect to local hub
-try:
-    initReq = s.post(initURL, json={'API_TOKEN': config['API_TOKEN'], 'DEVICE_TYPE': config['DEVICE_TYPE']})
-except Exception as e:
-    raise ConnectionError(f"Local Hub not found at {initURL}.  Raised Exception: {Exception}")
-
-if initReq.status_code != 200:
-    raise ConnectionError(f'Problem initializing with server.  Status Code {initReq.status_code}')
-
+def comInit():
+    try:
+        initReq = requests.post(initURL, headers=header, json={'DEVICE_TYPE': config['DEVICE_TYPE'],
+                                                              'DEVICE_ID': config['DEVICE_ID'],
+                                                              'DATA': 'init'})
+    except Exception as e:
+        print(f"Local Hub not found at {initURL}.  Raised Exception: {Exception}", file=sys.stdout)
+        return False
+    if not initReq.ok:
+        print(f'Problem initializing with server.  Status Code {initReq.status_code}', file=sys.stdout)
+        return False
+    return True
 
 # #################
 # Begin Loop main code
 
 
-class ioControl(threading.Thread):
+class IoControl(threading.Thread):
     def __init__(self):
         threading.Thread.__init__(self)
 
@@ -56,24 +68,53 @@ class ioControl(threading.Thread):
         global commands
         global dataURL
         global config
-        while commands['STAY_ONLINE']:
+        while config['ONLINE']:
             try:
-                commands = requests.get(dataURL, auth=config['API_TOKEN'])  # TODO Check on proper credential sending
+                commandRequest = requests.get(dataURL, headers=header)
+                commands = commandRequest.json()
+                if commands['RATE']:
+                    config['RATE'] = commands['RATE']
+                if commands['STAY_ONLINE'] == 'False':
+                    config['ONLINE'] = False
+                    # with open(configPath) as configFile:
+                    #     yaml.dump(config, configFile)
             except:
-                continue
+                print('Warning: no commands received from server.', file=sys.stdout)
+        print('Shutdown command received- Stopping IO thread.', file=sys.stdout)
 
 
-
-class sendStatus(threading.Thread):
-    def __init__(self, image):
+class SendStatus(threading.Thread):
+    def __init__(self):
         threading.Thread.__init__(self)
-        self.image = image
 
     def run(self):
         global config
-        try:
-            requests.post(dataURL, data=self.image) #Todo check how to post file
-        except:
-            pass
+        while config['ONLINE']:
+            time.sleep(config)
+            chirp = requests.post(dataURL, headers=header, json={'DEVICE_ID': config['DEVICE_ID'],
+                                                                 'RATE': config['RATE']})
+            if chirp.ok:
+                print('Chirp sent successfully.', file=sys.stdout)
+            else:
+                print('Error sending chirp', file=sys.stdout)
+        print('Shutdown command received- Stopping chirp thread.', file=sys.stdout)
 
 
+ioControl = IoControl()
+sendStatus = SendStatus()
+
+threads = [ioControl, sendStatus]
+
+for t in threads:
+    t.start()
+
+for t in threads:
+    t.join()
+
+
+# #####################
+# Shutdown
+
+print('Thread shutdown complete. Shutting down device...', file=sys.stdout)
+
+# subprocess.Popen(['shutdown', '-h', 'now'])
