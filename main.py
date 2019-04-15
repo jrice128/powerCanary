@@ -24,10 +24,10 @@ def blinkError():
 # load configuration
 configPath = os.path.join(os.getcwd(), 'config.yaml')
 with open(configPath) as configFile:
-    try:
-        config = yaml.load(configFile, Loader=yaml.FullLoader)
-    except yaml.YAMLError as exc:
-        raise FileNotFoundError(exc)
+    #try:
+    config = yaml.load(configFile)
+    # except yaml.YAMLError as exc:
+    #     raise FileNotFoundError(exc)
 
 config['ONLINE'] = True
 
@@ -36,7 +36,7 @@ config['ONLINE'] = True
 # enableLED()
 
 # build request urls
-serverURL = 'http://' + config['SERVER_IP'] + ':' + config['SERVER_PORT'] # ToDo convert to HTTPS after testing
+serverURL = 'http://' + config['SERVER_IP'] + ':' + str(config['SERVER_PORT']) # ToDo convert to HTTPS after testing
 initURL = serverURL + config['API_INIT']
 dataURL = serverURL + config['API_DATA']
 header = {'Authorization': 'Bearer ' + config['API_TOKEN']}
@@ -68,16 +68,20 @@ class IoControl(threading.Thread):
         global commands
         global dataURL
         global config
+        time.sleep(1)
         while config['ONLINE']:
+            time.sleep(config['RATE'])
             try:
                 commandRequest = requests.get(dataURL, headers=header)
-                commands = commandRequest.json()
-                if commands['RATE']:
-                    config['RATE'] = commands['RATE']
-                if commands['STAY_ONLINE'] == 'False':
-                    config['ONLINE'] = False
-                    # with open(configPath) as configFile:
-                    #     yaml.dump(config, configFile)
+                if commandRequest.ok:
+                    commands = commandRequest.json()
+                    print(f'Recieved commands: {commands}', file=sys.stdout)
+                    if commands['RATE']:
+                        config['RATE'] = commands['RATE']
+                    if commands['STAY_ONLINE'] == 'False':
+                        config['ONLINE'] = False
+                        # with open(configPath) as configFile:
+                        #     yaml.dump(config, configFile)
             except:
                 print('Warning: no commands received from server.', file=sys.stdout)
         print('Shutdown command received- Stopping IO thread.', file=sys.stdout)
@@ -90,7 +94,7 @@ class SendStatus(threading.Thread):
     def run(self):
         global config
         while config['ONLINE']:
-            time.sleep(config)
+            time.sleep(config['RATE'])
             chirp = requests.post(dataURL, headers=header, json={'DEVICE_ID': config['DEVICE_ID'],
                                                                  'RATE': config['RATE']})
             if chirp.ok:
@@ -104,6 +108,9 @@ ioControl = IoControl()
 sendStatus = SendStatus()
 
 threads = [ioControl, sendStatus]
+
+if not comInit():
+    pass
 
 for t in threads:
     t.start()
